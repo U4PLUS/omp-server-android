@@ -1,0 +1,27 @@
+[submodule "lib/pawn"]
+	path = lib/pawn
+	url = https://github.com/openmultiplayer/compiler.git
+[submodule "lib/pawn-natives"]
+	path = lib/pawn-natives
+	url = https://github.com/openmultiplayer/pawn-natives.git
+[submodule "lib/RakNet"]
+	path = lib/RakNet
+	url = https://github.com/openmultiplayer/RakNet.git
+[submodule "lib/ttmath"]
+	path = lib/ttmath
+	url = https://github.com/openmultiplayer/ttmath.git
+[submodule "lib/cpp-httplib"]
+	path = lib/cpp-httplib
+	url = https://github.com/openmultiplayer/cpp-httplib.git
+[submodule "lib/cmake-conan"]
+	path = lib/cmake-conan
+	url = https://github.com/openmultiplayer/cmake-conan.git
+[submodule "SDK"]
+	path = SDK
+	url = https://github.com/openmultiplayer/open.mp-sdk
+[submodule "Shared/Network"]
+	path = Shared/Network
+	url = https://github.com/openmultiplayer/open.mp-network
+[submodule "CAPI"]
+	path = CAPI
+	url = https://github.com/openmultiplayer/open.mp-capi

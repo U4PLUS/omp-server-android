@@ -1,0 +1,21 @@
+# 构建产物
+*.o
+*.a
+*.amx
+*.gch
+*.so
+*.tar.gz
+*.zip
+
+# 构建目录
+**/build/
+**/build-android/
+
+# 二进制产物（源码在 open.mp/lib/pawn）
+pawn-tools/
+android-app/lib/
+android-app/assets/server/components/
+
+# 备份/临时
+*.bak
+AndroidManifest.xml.bak

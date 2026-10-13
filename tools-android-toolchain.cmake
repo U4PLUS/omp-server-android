@@ -1,0 +1,13 @@
+# Custom Android toolchain via pseudo-NDK (box64-wrapped clang in unified bin/).
+set(CMAKE_SYSTEM_NAME Android)
+set(CMAKE_SYSTEM_VERSION 26)
+set(ANDROID_ABI arm64-v8a)
+set(CMAKE_ANDROID_STL_TYPE c++_static)
+set(CMAKE_CXX_STANDARD_LIBRARIES "-lc++_static -lc++abi -lm -ldl")
+set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+set(CMAKE_ANDROID_NDK /tmp/pseudo-ndk)
+set(CMAKE_ANDROID_NDK_TOOLCHAIN_VERSION clang)
+set(CMAKE_HOST_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+set(CMAKE_CROSSCOMPILING TRUE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
