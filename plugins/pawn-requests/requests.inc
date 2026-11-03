@@ -29,6 +29,8 @@ forward OnWebSocketDisconnect(WebSocket:ws, bool:isJson, status, reason[], reaso
 native RequestsClient:RequestsClient(const endpoint[], Headers:headers = Headers:-1);
 // StringToGBK converts a UTF-8 string into a GBK-encoded string (for client display).
 native StringToGBK(const src[], dest[], destlen = sizeof(dest));
+// StringToUTF8 converts a GBK-encoded string into UTF-8 (for sending to HTTP/JSON APIs).
+native StringToUTF8(const src[], dest[], destlen = sizeof(dest));
 
 // RequestHeaders constructs a headers object and returns a handle ID. This
 // function is designed to only ever be used as an argument to functions that

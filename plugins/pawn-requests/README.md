@@ -69,6 +69,23 @@ new gbkReply[512];
 StringToGBK(reply, gbkReply);               // 转 GBK 后发送给客户端
 ```
 
+### 新增 native：StringToUTF8
+
+```pawn
+native StringToUTF8(const src[], dest[], destlen = sizeof(dest));
+```
+
+把 **GBK** 字符串转成 **UTF-8**（`StringToGBK` 的逆运算）。用于把客户端输入的 GBK 文本转成
+UTF-8 后发送给 HTTP/JSON/AI API（这些 API 期望 UTF-8）。示例：
+```pawn
+// 客户端输入（如 /ds [内容]）是 GBK
+new content[512];
+strmid(content, cmdtext, 4, strlen(cmdtext), sizeof(content));
+new utf8Content[512];
+StringToUTF8(content, utf8Content);          // GBK -> UTF-8 后再发给 API
+JsonString(utf8Content)
+```
+
 ## 移植版修改（相对原版 Southclaws/pawn-requests）
 
 1. **Android arm64 交叉编译**：原版面向 32 位 SA-MP / Windows，本版编译为 Android arm64 独立插件，
@@ -79,8 +96,10 @@ StringToGBK(reply, gbkReply);               // 转 GBK 后发送给客户端
    导致 **SIGABRT 崩溃**。修复：open.mp 服务器改用**共享 libc++_shared.so**，统一进程内 libc++，
    插件与服务器 unwind 一致，不再崩溃。因此 app 内置 `libc++_shared.so`。
 
-3. **StringToGBK**：新增 native，UTF-8→GBK 转换（Android NDK 的 iconv 不支持 GBK，故预生成 BMP
-   映射表嵌入插件）。
+3. **StringToGBK / StringToUTF8**：新增两个双向编码转换 native（Android NDK 的 iconv 不支持 GBK，
+   故预生成 BMP 映射表嵌入插件）：
+   - `StringToGBK`：UTF-8→GBK，用于把 AI/HTTP 返回的 UTF-8 转成 GBK 显示给客户端；
+   - `StringToUTF8`：GBK→UTF-8，用于把客户端输入（GBK）转成 UTF-8 后再发送给 AI/HTTP API（否则 AI 收不到正常中文）。
 
 4. **WebSocket SSL 证书路径**：`WebSocketClient` / `JsonWebSocketClient` 的 SSL 回调原用
    `/etc/ssl/certs/ca-certificates.crt`（Linux 路径），Android 上不存在导致连接失败；已改为 Android
@@ -92,7 +111,8 @@ StringToGBK(reply, gbkReply);               // 转 GBK 后发送给客户端
 
 ## 变更记录
 
-- **v5（最终）**：依赖内置 app（libcpprest + libc++_shared 解压到 files/server/plugins/），插件单文件分发；
+- **v6**：新增 `StringToUTF8`（GBK→UTF-8），修复发送给 AI 的中文乱码（客户端 GBK 输入需先转 UTF-8 再发请求）。
+- **v5**：依赖内置 app（libcpprest + libc++_shared 解压到 files/server/plugins/），插件单文件分发；
   新增 `StringToGBK`；修复 WebSocket SSL 证书路径；共享 libc++ 统一 unwind（加载不再崩溃）。
 - v4：静态 libc++ + 移除 cpprestsdk `imbue(std::locale::classic())` 调用（locale 状态冲突修复，实验版）。
 - v3：移除 `utility::conversions::to_string` 对 `std::locale::classic()` 的调用。

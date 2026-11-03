@@ -15,6 +15,7 @@ namespace Natives
     int RequestsClient(AMX *amx, cell *params);
     int RequestHeaders(AMX *amx, cell *params);
     int StringToGBK(AMX *amx, cell *params);
+    int StringToUTF8(AMX *amx, cell *params);
     int Request(AMX *amx, cell *params);
     int RequestJSON(AMX *amx, cell *params);
 

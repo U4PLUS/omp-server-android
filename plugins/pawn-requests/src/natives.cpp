@@ -919,3 +919,80 @@ int Natives::StringToGBK(AMX *amx, cell *params)
     amx_SetCppString(amx, params[2], gbk, static_cast<size_t>(destlen));
     return 0;
 }
+
+// ---- GBK -> UTF-8 (reverse of StringToGBK) ----
+// Reverse lookup table: index = GBK code value, value = Unicode code point (0xFFFF = unmapped).
+static uint16_t gbk_to_cp_lut[0x10000];
+static bool gbk_lut_ready = false;
+
+static void init_gbk_lut()
+{
+    for (int i = 0; i < 0x10000; ++i) gbk_to_cp_lut[i] = 0xFFFF;
+    for (int i = 0; i < gbk_map_size; ++i)
+    {
+        gbk_to_cp_lut[gbk_map[i].gbk] = gbk_map[i].cp;
+    }
+    gbk_lut_ready = true;
+}
+
+// Convert a GBK-encoded byte string into UTF-8. GBK lead byte 0x81-0xFE, trail byte 0x40-0xFE (excl 0x7F).
+static std::string gbk_to_utf8(const std::string &gbk)
+{
+    if (!gbk_lut_ready) init_gbk_lut();
+    std::string out;
+    out.reserve(gbk.size() + 8);
+    size_t i = 0;
+    while (i < gbk.size())
+    {
+        unsigned char c = static_cast<unsigned char>(gbk[i]);
+        if (c < 0x80)
+        {
+            out.push_back(static_cast<char>(c));  // ASCII passthrough
+            ++i;
+            continue;
+        }
+        if (c >= 0x81 && c <= 0xFE && i + 1 < gbk.size())
+        {
+            unsigned char t = static_cast<unsigned char>(gbk[i + 1]);
+            if ((t >= 0x40 && t <= 0x7E) || (t >= 0x80 && t <= 0xFE))
+            {
+                uint16_t g = static_cast<uint16_t>((c << 8) | t);
+                uint32_t cp = gbk_to_cp_lut[g];
+                if (cp != 0xFFFF)
+                {
+                    // Encode cp as UTF-8 (BMP only).
+                    if (cp < 0x80)
+                    {
+                        out.push_back(static_cast<char>(cp));
+                    }
+                    else if (cp < 0x800)
+                    {
+                        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                    }
+                    else
+                    {
+                        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                    }
+                }
+                i += 2;
+                continue;
+            }
+        }
+        // Invalid lead byte: emit as-is (fallback) to avoid data loss.
+        out.push_back(static_cast<char>(c));
+        ++i;
+    }
+    return out;
+}
+
+int Natives::StringToUTF8(AMX *amx, cell *params)
+{
+    std::string src = amx_GetCppString(amx, params[1]);
+    cell destlen = params[3];
+    std::string utf8 = gbk_to_utf8(src);
+    amx_SetCppString(amx, params[2], utf8, static_cast<size_t>(destlen));
+    return 0;
+}

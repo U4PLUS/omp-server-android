@@ -12,6 +12,7 @@ extern "C" AMX_NATIVE_INFO amx_Natives[] = {
     {"RequestsClient", Natives::RequestsClient},
     {"RequestHeaders", Natives::RequestHeaders},
     {"StringToGBK", Natives::StringToGBK},
+    {"StringToUTF8", Natives::StringToUTF8},
     {"Request", Natives::Request},
     {"RequestJSON", Natives::RequestJSON},
 
