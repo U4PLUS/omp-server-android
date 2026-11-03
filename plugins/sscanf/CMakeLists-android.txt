@@ -1,0 +1,50 @@
+cmake_minimum_required(VERSION 3.20)
+project(sscanf-omp-android LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# open.mp Android: build sscanf as an open.mp COMPONENT (COMPONENT_ENTRY_POINT / SScanFComponent),
+# not as a SA-MP legacy plugin (that path needs x86 subhook which arm64 does not support).
+
+include_directories(
+	robin-hood-hashing/src/include
+	string-view-lite/include
+	open.mp/include
+	span-lite/include
+	glm
+	amx
+	.
+	subhook
+)
+
+add_definitions(
+	-DPROJECT_NAME="sscanf"
+	-DHAVE_STDINT_H=1
+	-DNOMINMAX=1
+	-Dnssv_CONFIG_SELECT_STRING_VIEW=nssv_STRING_VIEW_NONSTD
+	-Dspan_CONFIG_SELECT_SPAN=span_SPAN_NONSTD
+	-DPAWN_CELL_SIZE=32
+	-DLINUX=1
+	-DSSCANF_OMPSERVER
+)
+
+add_library(sscanf MODULE
+	amx/amx.c
+	amx/amxplugin.c
+	amx/getch.c
+	subhook/subhook_stub.c
+	array.cpp
+	data.cpp
+	enum.cpp
+	error.cpp
+	kustom.cpp
+	specifiers.cpp
+	sscanf.cpp
+	utils.cpp
+)
+
+set_target_properties(sscanf PROPERTIES PREFIX "" OUTPUT_NAME "sscanf")
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -fPIC -w")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -fPIC -w -include glm/glm.hpp -include omp_android_fix.h")
