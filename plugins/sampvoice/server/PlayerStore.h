@@ -1,0 +1,53 @@
+/*
+	This is a SampVoice project file
+	Author: CyberMor <cyber.mor.2020@gmail.ru>
+	open.mp version author: AmyrAhmady (iAmir) <hhm6@yahoo.com>
+
+	See more here https://github.com/AmyrAhmady/sampvoice
+
+	Copyright (c) Daniel (CyberMor) 2020 All rights reserved
+*/
+
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <shared_mutex>
+#include <cstdint>
+
+#include "sdk.hpp"
+
+#include "PlayerInfo.h"
+
+class PlayerStore {
+
+	PlayerStore() = delete;
+	~PlayerStore() = delete;
+	PlayerStore(const PlayerStore&) = delete;
+	PlayerStore(PlayerStore&&) = delete;
+	PlayerStore& operator=(const PlayerStore&) = delete;
+	PlayerStore& operator=(PlayerStore&&) = delete;
+
+public:
+	static FlatPtrHashSet<IPlayer> internalPlayerPool;
+
+	static void AddPlayerToStore(uint16_t playerId, uint8_t version, bool microStatus);
+	static void RemovePlayerFromStore(uint16_t playerId);
+
+	static void ClearStore();
+
+	static bool IsPlayerConnected(uint16_t playerId) noexcept;
+	static bool IsPlayerHasPlugin(uint16_t playerId) noexcept;
+
+	static PlayerInfo* RequestPlayerWithSharedAccess(uint16_t playerId) noexcept;
+	static void ReleasePlayerWithSharedAccess(uint16_t playerId) noexcept;
+
+	static PlayerInfo* RequestPlayerWithUniqueAccess(uint16_t playerId) noexcept;
+	static void ReleasePlayerWithUniqueAccess(uint16_t playerId) noexcept;
+
+private:
+
+	static std::array<std::shared_mutex, PLAYER_POOL_SIZE> playerMutex;
+	static std::array<std::atomic<PlayerInfo*>, PLAYER_POOL_SIZE> playerInfo;
+
+};

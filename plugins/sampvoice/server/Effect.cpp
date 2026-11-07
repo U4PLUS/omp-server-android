@@ -1,0 +1,109 @@
+#include "EffectManager.h"
+#include "StreamManager.h"
+#include "Effect.h"
+
+#include <functional>
+
+#include "Stream.h"
+#include "NetHandler.h"
+#include "Header.h"
+
+Effect::~Effect()
+{
+	for (const auto stream : this->attachedStreams)
+	{
+		if (StreamManager::IsValidStream(stream))
+		{
+			{
+				const auto iter = this->streamPlayerCallbacks.find(stream);
+				if (iter != this->streamPlayerCallbacks.end())
+				{
+					stream->RemovePlayerCallback(iter->second);
+				}
+			}
+
+			{
+				const auto iter = this->streamDeleteCallbacks.find(stream);
+				if (iter != this->streamDeleteCallbacks.end())
+				{
+					stream->RemoveDeleteCallback(iter->second);
+				}
+			}
+
+			PackGetStruct(&*this->packetDeleteEffect, SV::DeleteEffectPacket)->stream
+				= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stream));
+
+			stream->SendControlPacket(*&*this->packetDeleteEffect);
+		}
+		else
+		{
+			this->attachedStreams.erase(stream);
+		}
+	}
+
+	EffectManager::UnregisterEffect(this);
+}
+
+void Effect::AttachStream(Stream* const stream)
+{
+	if (this->attachedStreams.insert(stream).second)
+	{
+		this->streamPlayerCallbacks[stream] =
+			stream->AddPlayerCallback(std::bind(&Effect::PlayerCallback,
+				this, std::placeholders::_1, std::placeholders::_2));
+
+		this->streamDeleteCallbacks[stream] =
+			stream->AddDeleteCallback(std::bind(&Effect::DeleteCallback,
+				this, std::placeholders::_1));
+
+		PackGetStruct(&*this->packetCreateEffect, SV::CreateEffectPacket)->stream
+			= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stream));
+
+		stream->SendControlPacket(*&*this->packetCreateEffect);
+	}
+}
+
+void Effect::DetachStream(Stream* const stream)
+{
+	if (this->attachedStreams.erase(stream))
+	{
+		{
+			const auto iter = this->streamPlayerCallbacks.find(stream);
+			if (iter != this->streamPlayerCallbacks.end())
+			{
+				stream->RemovePlayerCallback(iter->second);
+				this->streamPlayerCallbacks.erase(iter);
+			}
+		}
+
+		{
+			const auto iter = this->streamDeleteCallbacks.find(stream);
+			if (iter != this->streamDeleteCallbacks.end())
+			{
+				stream->RemoveDeleteCallback(iter->second);
+				this->streamDeleteCallbacks.erase(iter);
+			}
+		}
+
+		PackGetStruct(&*this->packetDeleteEffect, SV::DeleteEffectPacket)->stream
+			= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stream));
+
+		stream->SendControlPacket(*&*this->packetDeleteEffect);
+	}
+}
+
+void Effect::PlayerCallback(Stream* const stream, const uint16_t player)
+{
+	PackGetStruct(&*this->packetCreateEffect, SV::CreateEffectPacket)->stream
+		= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stream));
+
+	NetHandler::SendControlPacket(player, *&*this->packetCreateEffect);
+}
+
+void Effect::DeleteCallback(Stream* const stream)
+{
+	this->attachedStreams.erase(stream);
+
+	this->streamPlayerCallbacks.erase(stream);
+	this->streamDeleteCallbacks.erase(stream);
+}
