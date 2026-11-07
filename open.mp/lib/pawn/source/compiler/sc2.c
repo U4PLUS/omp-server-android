@@ -161,10 +161,11 @@ SC_FUNC int plungequalifiedfile(char *name,char new_extensions)
     strcpy(ext,extensions[ext_idx]);
     strcpy(real_path,path);
     #if DIRSEP_CHAR!='\\'
-      if (pc_compat) {
+      {
         char *ptr;
-        /* convert backslashes to native directory separators for maximum
-         * compatibility with the Windows compiler
+        /* Always convert backslashes to native directory separators, so that
+         * Windows-style include paths (e.g. YSI_Data\y_foreach\y_foreach_entry)
+         * resolve correctly on Android/Linux regardless of pc_compat.
          */
         for (ptr=real_path; *ptr!='\0'; ptr++)
           if (*ptr=='\\')
@@ -235,15 +236,22 @@ SC_FUNC int plungefile(char *name,int try_currentpath,int try_includepaths)
        * there is a (relative) path for the current file
        */
       char *ptr;
-      if ((ptr=strrchr(inpfname,dirsep))!=NULL) {
-        int len=(int)(ptr-inpfname)+1;
-        if (len+strlen(name)<_MAX_PATH) {
-          char path[_MAX_PATH];
-          strlcpy(path,inpfname,len+1);
-          strlcat(path,name,arraysize(path));
-          result=plungequalifiedfile(path,1);
+      /* find the last directory separator; on Android/Linux also accept
+       * backslashes so Windows-style include paths resolve relatively */
+      {
+        char *p1=strrchr(inpfname,'/');
+        char *p2=strrchr(inpfname,'\\');
+        char *ptr=(p1>p2) ? p1 : p2;
+        if (ptr!=NULL) {
+          int len=(int)(ptr-inpfname)+1;
+          if (len+(int)strlen(name)<_MAX_PATH) {
+            char path[_MAX_PATH];
+            strlcpy(path,inpfname,len+1);
+            strlcat(path,name,arraysize(path));
+            result=plungequalifiedfile(path,1);
+          } /* if */
         } /* if */
-      } /* if */
+      }
     } /* if */
   } /* if */
 

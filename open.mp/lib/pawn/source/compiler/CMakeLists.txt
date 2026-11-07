@@ -13,6 +13,9 @@ set(VERSION_STR ${VERSION})
 math(EXPR VERSION_INT "${VERSION_MAJOR} << 8 | ${VERSION_MINOR}")
 
 # check for optional include files
+set(PAWN_CELL_SIZE 32)
+add_definitions(-DPAWN_CELL_SIZE=32)
+
 include(CheckIncludeFile)
 check_include_file("unistd.h" HAVE_UNISTD_H)
 if(HAVE_UNISTD_H)
@@ -54,7 +57,7 @@ if(MSVC)
   endif()
 endif()
 
-if(UNIX)
+if(UNIX OR CMAKE_SYSTEM_NAME STREQUAL "Generic")
   add_definitions(-DLINUX -DENABLE_BINRELOC -g)
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../linux)
   link_libraries(pthread)
@@ -107,7 +110,7 @@ if(WIN32)
     set(PAWNC_SRCS ${PAWNC_SRCS} libpawnc.def)
   endif()
 endif()
-if(UNIX)
+if(UNIX OR CMAKE_SYSTEM_NAME STREQUAL "Generic")
   set(PAWNC_SRCS
     ${PAWNC_SRCS}
     ${CMAKE_CURRENT_SOURCE_DIR}/../linux/binreloc.c
