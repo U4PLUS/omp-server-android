@@ -22,8 +22,8 @@ if(BUILD_SERVER)
 			PRIVATE "-Wno-unused-function"
 		)
 		target_include_directories(pawn-runtime 
-			PRIVATE ${PAWN_RUNTIME_SRC_DIR}
-			INTERFACE "${PAWN_RUNTIME_SRC_DIR}/.."
+			PRIVATE ${PAWN_RUNTIME_SRC_DIR} ${PAWN_RUNTIME_SRC_DIR}/../linux
+			INTERFACE "${PAWN_RUNTIME_SRC_DIR}/.." "${PAWN_RUNTIME_SRC_DIR}/../linux"
 		)
 
 		include(CheckIncludeFile)

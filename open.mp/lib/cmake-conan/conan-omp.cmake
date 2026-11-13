@@ -25,6 +25,16 @@ function(_conan_omp_detect_os output)
         set(_os "Macos")
     elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
         set(_os "Neutrino")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Generic")
+        # Android arm64 cross-build via our custom toolchain (Generic platform).
+        # On a native arm64 proot host the bundled NDK clang (x86_64) cannot run,
+        # so let conan treat deps as a plain Linux/armv8 build and rely on the
+        # /opt/armtc user toolchain (which targets aarch64-linux-android26) instead.
+        if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            set(_os "Linux")
+        else()
+            set(_os "Android")
+        endif()
     elseif(CMAKE_SYSTEM_NAME)
         set(_os "${CMAKE_SYSTEM_NAME}")
     elseif(WIN32)
@@ -609,13 +619,27 @@ function(_conan_omp_write_host_profile output build_type)
         set(_conan_cmake_generator "Ninja")
     else()
         set(_conan_cmake_generator "${CMAKE_GENERATOR}")
+        if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            # Native arm64 host: build deps with the local /opt/armtc toolchain so the
+            # bundled NDK clang (x86_64) is never invoked; /opt/armtc targets android26.
+            string(APPEND _profile "tools.cmake.cmaketoolchain:user_toolchain=[\"/home/dsh/omp-server-android/omp-server-android/tools/android-arm64-native.cmake\"]\n")
+            string(APPEND _profile "tools.build:compiler_executables={\"c\": \"/opt/armtc/bin/clang\", \"cpp\": \"/opt/armtc/bin/clang++\"}\n")
+        endif()
     endif()
     string(APPEND _profile "tools.cmake.cmaketoolchain:generator=${_conan_cmake_generator}\n")
     if(_os STREQUAL "Android")
         string(APPEND _profile "tools.android:ndk_path=${_android_ndk_path}\n")
+        if(NOT _android_user_toolchain_path)
+            # Native arm64 host: build conan deps with the local /opt/armtc toolchain
+            # (the bundled NDK clang is x86_64 and cannot run on this arm64 proot host).
+            set(_android_user_toolchain_path "/home/dsh/omp-server-android/omp-server-android/tools/android-arm64-native.cmake")
+        endif()
         if(_android_user_toolchain_path)
             string(APPEND _profile "tools.cmake.cmaketoolchain:user_toolchain=[\"${_android_user_toolchain_path}\"]\n")
         endif()
+        # Force the native arm64 compiler executables so the Android-NDK clang
+        # (x86_64, unrunnable on this host) is never invoked for dependency builds.
+        string(APPEND _profile "tools.build:compiler_executables={\"c\": \"/opt/armtc/bin/clang\", \"cpp\": \"/opt/armtc/bin/clang++\"}\n")
         if(_android_meson_c)
             string(APPEND _profile "tools.meson.mesontoolchain:extra_variables={\"binaries\":{\"c\":\"${_android_meson_c}\",\"cpp\":\"${_android_meson_cpp}\",\"ar\":\"${_android_meson_ar}\"}}\n")
         endif()

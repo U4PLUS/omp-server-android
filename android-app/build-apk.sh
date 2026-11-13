@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-APP=/home/dsh/main/GTASA/openmp-server/android-app
-SRC=/home/dsh/main/GTASA/openmp-server/open.mp/build-android/Output/Release/Server
+APP=/home/dsh/omp-server-android/omp-server-android/android-app
+SRC=/home/dsh/omp-server-android/omp-server-android/build-android/Output/Release/Server
 BT=/opt/android-sdk/build-tools/34.0.0
 PLATFORM=/opt/android-sdk/platforms/android-34/android.jar
 BOX64=/opt/box64-src/build/box64
@@ -15,6 +15,10 @@ cp $SRC/omp-server $APP/assets/server/omp-server
 cp $SRC/components/*.so $APP/assets/server/components/
 /usr/bin/llvm-strip-14 $APP/assets/server/omp-server
 for f in $APP/assets/server/components/*.so; do /usr/bin/llvm-strip-14 "$f"; done
+# 插件运行时依赖（由 app 提供）：libcpprest + libc++_shared 进 lib/arm64-v8a/
+mkdir -p $APP/lib/arm64-v8a
+cp /home/dsh/omp-server-android/plugins/cpprestsdk-build/Binaries/libcpprest.so.2.10 $APP/lib/arm64-v8a/ 2>/dev/null || true
+if [ ! -f $APP/lib/arm64-v8a/libc++_shared.so ]; then cp /home/dsh/omp-server-android/plugins/release/requests-omp-android/libc++_shared.so $APP/lib/arm64-v8a/ 2>/dev/null || true; fi
 du -sh $APP/assets/server
 
 echo "--- [2/7] javac ---"

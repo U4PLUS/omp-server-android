@@ -25,6 +25,8 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import java.io.File
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.io.RandomAccessFile
 
 class MainActivity : Activity() {
@@ -32,6 +34,7 @@ class MainActivity : Activity() {
         @Volatile var darkOverride = "auto"
         private const val REQ_OPEN = 1001
         private const val REQ_SAVE = 1002
+        private const val REQ_IMPORT_FRP = 1003
         @Volatile var userLang: String? = null
 
 
@@ -39,6 +42,8 @@ class MainActivity : Activity() {
         private const val ACTION_START = "com.openmp.app.START"
         private const val ACTION_STOP = "com.openmp.app.STOP"
         private const val ACTION_RESTART = "com.openmp.app.RESTART"
+        private const val ACTION_FRPC_START = "com.openmp.app.FRPC_START"
+        private const val ACTION_FRPC_STOP = "com.openmp.app.FRPC_STOP"
     }
 
     // ---------- 深色模式（跟随系统） ----------
@@ -74,6 +79,7 @@ class MainActivity : Activity() {
     private var uptimeText: TextView? = null
     private var gmText: TextView? = null
     private var errText: TextView? = null
+    private var frpStatusText: TextView? = null
     private var pathText: TextView? = null
     private var fileListBox: LinearLayout? = null
     private var logView: TextView? = null
@@ -123,6 +129,10 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {}
             uiLog("nav post")
+            // 打开 APP 自动启动 FTP（若设置页开关开着）；独立于 omp-server 是否运行
+            try {
+                if (prefs.getBoolean("ftp_enabled", true)) send(OmpServerService.ACTION_FTP_TOGGLE)
+            } catch (e: Exception) {}
             serverDir = File(filesDir, "server")
             fileCurrentDir = serverDir
             pendingUploadDir = serverDir
@@ -214,6 +224,20 @@ class MainActivity : Activity() {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val pad = dp(20)
         uiLog("sp pad " + pad)
+
+        // 右上角 FRP 标志按钮行
+        page.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(pad, dp(8), pad, 0)
+            frpStatusText = tv(L.t("frp_title"), 11f, dimC())
+            frpStatusText!!.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(frpStatusText!!)
+            addView(button(L.t("frp_title")) { showFrpDialog() }.apply {
+                layoutParams = LinearLayout.LayoutParams(dp(96), dp(38))
+            })
+        })
+        uiLog("sp frp-row-done")
 
         page.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -561,7 +585,8 @@ class MainActivity : Activity() {
             val buf = ByteArray((len - skip).toInt())
             raf.readFully(buf)
             raf.close()
-            val text = String(buf)
+            // 服务器日志固定按 GBK 解码（中文旧脚本输出），避免乱码
+            val text = String(buf, Charset.forName("GBK"))
             // 内容无变化：不刷新、不滚动（消除上下拉扯）
             if (lastLog[vv] == text) return
             lastLog[vv] = text
@@ -624,7 +649,11 @@ class MainActivity : Activity() {
                 addView(lbl)
                 val sw = Switch(this@MainActivity)
                 sw.isChecked = prefs.getBoolean("ftp_enabled", true)
-                sw.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("ftp_enabled", on).apply() }
+                sw.setOnCheckedChangeListener { _, on ->
+                    prefs.edit().putBoolean("ftp_enabled", on).apply()
+                    // 立即生效：开→自动启动 FTP，关→停止 FTP（无需重启服务器）
+                    try { send(OmpServerService.ACTION_FTP_TOGGLE) } catch (e: Exception) {}
+                }
                 addView(sw)
             })
             addView(LinearLayout(this@MainActivity).apply {
@@ -651,6 +680,38 @@ class MainActivity : Activity() {
                         .setPositiveButton("OK", null).show()
                 }
                 addView(save)
+            })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(12), 0, 0)
+                val lbl = tv(L.t("set_ftp_account"), 14f, textC())
+                lbl.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(lbl)
+                val userInput = EditText(this@MainActivity).apply { setBackgroundColor(surfaceC()) }
+                userInput.setText(prefs.getString("ftp_user", ""))
+                userInput.hint = L.t("set_ftp_user_hint")
+                userInput.setTextColor(textC())
+                userInput.layoutParams = LinearLayout.LayoutParams(dp(96), dp(42))
+                addView(userInput)
+                val passInput = EditText(this@MainActivity).apply { setBackgroundColor(surfaceC()) }
+                passInput.setText(prefs.getString("ftp_pass", ""))
+                passInput.hint = L.t("set_ftp_pass_hint")
+                passInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                passInput.setTextColor(textC())
+                passInput.layoutParams = LinearLayout.LayoutParams(dp(96), dp(42))
+                addView(passInput)
+                val saveAcct = button(L.t("save"))
+                saveAcct.layoutParams = LinearLayout.LayoutParams(dp(56), dp(42))
+                saveAcct.setOnClickListener {
+                    val u = userInput.text.toString().trim()
+                    val p = passInput.text.toString()
+                    prefs.edit().putString("ftp_user", u).putString("ftp_pass", p).apply()
+                    AlertDialog.Builder(this@MainActivity)
+                        .setMessage(L.t("set_ftp_saved_acct") + " (${L.t("set_ftp_restart")})")
+                        .setPositiveButton("OK", null).show()
+                }
+                addView(saveAcct)
             })
             addView(tv(L.t("set_ftp_note"), 11f, dimC()).apply { setPadding(0, dp(8), 0, 0) })
         })
@@ -696,6 +757,22 @@ class MainActivity : Activity() {
         })
         page.addView(sectionDivider())
 
+        // ---------- FRP 内网穿透 ----------
+        page.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, dp(12), pad, dp(8))
+            addView(tv(L.t("frp_title"), 11f, dimC(), true))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(8), 0, 0)
+                val lp = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+                addView(button(L.t("frp_import")) { importFrpConfig() }.apply { layoutParams = lp })
+                addView(button(L.t("frp_edit_config")) { showFrpEdit() }.apply { layoutParams = lp })
+            })
+            addView(tv(L.t("frp_config_hint"), 11f, dimC()).apply { setPadding(0, dp(8), 0, 0) })
+        })
+        page.addView(sectionDivider())
+
         page.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, dp(12), pad, dp(12))
@@ -719,6 +796,115 @@ class MainActivity : Activity() {
         } catch (t: Throwable) {
             try { File(filesDir, "app_log.txt").appendText("[send $action] $t\n") } catch (e: Exception) {}
         }
+    }
+
+    // ---------- FRP ----------
+    private fun frpcConfigFile(): File = File(serverDir, "frpc/frpc.toml")
+
+    // 实时进程检测（同 UID 子进程，pidof 可靠；不依赖持久化 state 文件）
+    private fun isProcAlive(needle: String): Boolean = try {
+        // 遍历 /proc，匹配进程 cmdline 里第一个参数（可执行名）的 basename 是否包含 needle。
+        // 不依赖 pidof 精确进程名（frpc 以 libfrpc.so 启动、omp-server 以 libompserver.so / 完整路径启动，pidof 匹配不到）。
+        // 匹配前把 needle 与 basename 都归一化（去掉非字母数字），使 "omp-server" 能同时匹配 "omp-server" 和 "libompserver.so"。
+        val norm = needle.filter { it.isLetterOrDigit() }
+        var found = false
+        val proc = File("/proc")
+        proc.listFiles()?.forEach { d ->
+            if (found) return@forEach
+            if (!d.isDirectory || !d.name.all { it.isDigit() }) return@forEach
+            try {
+                val cmd = File(d, "cmdline").readBytes().toString(Charsets.ISO_8859_1)
+                    .substringBefore('\u0000').substringBefore(' ')
+                val base = cmd.substringAfterLast('/').filter { it.isLetterOrDigit() }
+                if (base.contains(norm)) found = true
+            } catch (e: Exception) {}
+        }
+        found
+    } catch (e: Exception) { false }
+
+    private fun refreshFrpStatus() {
+        try {
+            // 用实时进程检测：pidof frpc > 0 才是真正运行（避免持久化标志残留导致的假状态）
+            val running = isProcAlive("frpc")
+            frpStatusText?.text = (if (running) "● " else "") + L.t("frp_title")
+            frpStatusText?.setTextColor(if (running) greenC() else dimC())
+        } catch (e: Exception) {}
+    }
+
+    private fun showFrpDialog() {
+        val items = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        items.add(L.t("frp_start")); actions.add { send(ACTION_FRPC_START); refreshFrpStatus() }
+        items.add(L.t("frp_stop")); actions.add { send(ACTION_FRPC_STOP); refreshFrpStatus() }
+        items.add(L.t("frp_edit_config")); actions.add { showFrpEdit() }
+        items.add(L.t("frp_import")); actions.add { importFrpConfig() }
+        items.add(L.t("frp_open_log")); actions.add { showFrpLog() }
+        AlertDialog.Builder(this)
+            .setTitle(L.t("frp_title"))
+            .setItems(items.toTypedArray()) { _, i -> actions[i]() }
+            .setNeutralButton(L.t("cancel"), null)
+            .show()
+    }
+
+    private fun showFrpEdit() {
+        val f = frpcConfigFile()
+        if (!f.exists()) {
+            AlertDialog.Builder(this).setMessage(L.t("frp_no_config")).setPositiveButton("OK", null).show()
+            return
+        }
+        try {
+            val raw = f.readBytes()
+            // 优先按 UTF-8，失败按 GBK
+            var text = try { String(raw, Charsets.UTF_8) } catch (e: Exception) { "" }
+            if (text.isEmpty() || text.contains('\uFFFD')) {
+                text = try { String(raw, Charset.forName("GBK")) } catch (e: Exception) { String(raw, Charsets.ISO_8859_1) }
+            }
+            val input = EditText(this).apply {
+                setText(text)
+                setTextColor(textC())
+                setBackgroundColor(surfaceC())
+                gravity = Gravity.TOP or Gravity.START
+                isSingleLine = false
+                minLines = 14
+                setTextSize(11f)
+            }
+            val scroll = ScrollView(this); scroll.addView(input)
+            AlertDialog.Builder(this)
+                .setTitle(L.t("frp_title") + " - " + f.name)
+                .setView(scroll)
+                .setPositiveButton(L.t("save")) { _, _ ->
+                    try { f.writeText(input.text.toString()) } catch (e: Exception) { AlertDialog.Builder(this@MainActivity).setMessage("$e").setPositiveButton("OK", null).show() }
+                }
+                .setNegativeButton(L.t("cancel"), null)
+                .show()
+        } catch (e: Exception) {
+            AlertDialog.Builder(this).setMessage("$e").setPositiveButton("OK", null).show()
+        }
+    }
+
+    private fun importFrpConfig() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/octet-stream", "*/*"))
+            }
+            startActivityForResult(intent, REQ_IMPORT_FRP)
+        } catch (e: Exception) {
+            AlertDialog.Builder(this).setMessage("$e").setPositiveButton("OK", null).show()
+        }
+    }
+
+    private fun showFrpLog() {
+        try {
+            val f = File(getExternalFilesDir(null), "frpc_log.txt")
+            val text = if (f.exists()) f.readText().takeLast(8000) else "(no log)"
+            AlertDialog.Builder(this)
+                .setTitle(L.t("frp_open_log"))
+                .setMessage(text)
+                .setPositiveButton("OK", null)
+                .show()
+        } catch (e: Exception) { }
     }
 
     private fun refreshState() {
@@ -747,8 +933,11 @@ class MainActivity : Activity() {
             }
         } catch (e: Exception) {}
         val fresh = System.currentTimeMillis() - beat < 10000
+        // 最终运行判定：以实时进程检测为准（pidof omp-server），
+        // 避免关闭 APP / 进程被杀后 state.txt 的持久 running 标志残留导致假"运行中"
+        val actuallyRunning = running && isProcAlive("omp-server")
         val state = when {
-            !running -> 0
+            !actuallyRunning -> 0
             phase == "starting" -> 1
             !fresh -> 0
             else -> 2
@@ -791,6 +980,7 @@ class MainActivity : Activity() {
     private fun tick() {
         handler.postDelayed({
             refreshState()
+            refreshFrpStatus()
             tick()
         }, 900)
     }
@@ -828,6 +1018,14 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(data.data!!)?.use { out ->
                     src.inputStream().use { input -> input.copyTo(out) }
                 }
+            } else if (requestCode == REQ_IMPORT_FRP) {
+                val uri = data.data!!
+                val frpDir = File(serverDir, "frpc").apply { mkdirs() }
+                val target = File(frpDir, "frpc.toml")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { out -> input.copyTo(out) }
+                }
+                AlertDialog.Builder(this).setMessage(L.t("frp_imported")).setPositiveButton("OK", null).show()
             }
         } catch (t: Throwable) {
             AlertDialog.Builder(this).setMessage("transfer failed: $t").setPositiveButton("OK", null).show()

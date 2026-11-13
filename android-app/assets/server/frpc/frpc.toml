@@ -1,0 +1,20 @@
+# ===== open.mp Android frpc 配置 =====
+# 请修改为你自己的 frp 服务器(serverAddr/serverPort/token)
+serverAddr = "127.0.0.1"
+serverPort = 7000
+auth.token = ""
+
+# 穿透 open.mp 游戏端口 (TCP + UDP)
+[[proxies]]
+name = "omp-game-tcp"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 7777
+remotePort = 7777
+
+[[proxies]]
+name = "omp-game-udp"
+type = "udp"
+localIP = "127.0.0.1"
+localPort = 7777
+remotePort = 7777

@@ -14,6 +14,7 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FileWriter
+import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -31,25 +32,38 @@ class OmpServerService : Service() {
         const val ACTION_START = "com.openmp.app.START"
         const val ACTION_STOP = "com.openmp.app.STOP"
         const val ACTION_RESTART = "com.openmp.app.RESTART"
+        const val ACTION_FRPC_START = "com.openmp.app.FRPC_START"
+        const val ACTION_FRPC_STOP = "com.openmp.app.FRPC_STOP"
+        const val ACTION_FTP_TOGGLE = "com.openmp.app.FTP_TOGGLE"
     }
 
     private var serverProc: Process? = null
+    private var frpcProc: Process? = null
+    private var frpcOn = false
     private var ftpServer: FtpServer? = null
     private var logFile: File? = null
     private var serverLogOut: File? = null
     private var stateFile: File? = null
+    private var frpcStateFile: File? = null
     private var lastNotifyAt = 0L
 
     override fun onCreate() {
         super.onCreate()
         val ch = NotificationChannel(CHANNEL_ID, "open.mp Server", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        frpcStateFile = File(getExternalFilesDir(null), "frpc_state.txt")
+        loadFrpcState()
+        // 服务创建时自动启动 FTP（若设置页开关开着）；独立于 omp-server 是否运行
+        Thread { startFtpServer() }.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopServer(); log("Stopped by user."); stopSelf(); return START_NOT_STICKY }
             ACTION_RESTART -> { stopServer(); thread { startServer() }; return START_STICKY }
+            ACTION_FRPC_START -> { startForeground(1, buildNotification("FRP starting...")); thread { startFrpc() }; return START_STICKY }
+            ACTION_FRPC_STOP -> { stopFrpc(); log("FRP stopped by user."); return START_STICKY }
+            ACTION_FTP_TOGGLE -> { thread { startFtpServer() }; return START_STICKY }
             else -> {
                 if (serverProc?.isAlive == true) { log("Server already running."); return START_STICKY }
                 startForeground(1, buildNotification("Starting..."))
@@ -80,16 +94,19 @@ class OmpServerService : Service() {
             log("=== session ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())} ===")
             log("Data dir : ${dir.absolutePath}")
 
-            val assetVer = "240"
+            val assetVer = "243"
             val verFile = File(dir, ".asset_ver")
             val needRefresh = try { !verFile.exists() || verFile.readText().trim() != assetVer } catch (e: Exception) { true }
             if (needRefresh) {
-                copyAssets("server", dir)
+                // 只补缺失，绝不覆盖已有（保护用户改过的 config.json / gamemodes / frpc.toml 等）
+                copyMissing("server", dir)
                 try { verFile.writeText(assetVer) } catch (e: Exception) {}
-                log("assets refreshed to v$assetVer")
+                log("assets refreshed to v$assetVer (missing-only, user edits kept)")
             } else {
                 log("assets up to date (v$assetVer), keeping user edits")
             }
+            // 每次启动：检查 components / pawncc 与 assets 对比，缺失的补上（不覆盖用户已有文件）
+            ensureRequiredAssets(dir)
             syncExternal(dir)
             mergeGamemodes(dir)
 
@@ -112,30 +129,7 @@ class OmpServerService : Service() {
             AppState.running = true
             Thread.sleep(800)
             AppState.pid = sh("pidof omp-server").toLongOrNull() ?: 0L
-            val prefs = getSharedPreferences("omp", Context.MODE_PRIVATE)
-            val ftpPort = prefs.getInt("ftp_port", 2122)
-            val ftpEnabled = prefs.getBoolean("ftp_enabled", true)
-            if (ftpEnabled) {
-                ftpServer?.let { try { it.stop() } catch (e: Exception) {} }
-                ftpServer = null
-                var started = false
-                for (attempt in 0..4) {
-                    try {
-                        val trial = if (attempt == 0) ftpPort else ftpPort + attempt
-                        val fs = FtpServer(dir, trial)
-                        fs.start()
-                        ftpServer = fs
-                        log("FTP server listening on :" + trial + " (root " + dir.absolutePath + ")")
-                        started = true
-                        break
-                    } catch (e: Exception) {
-                        log("FTP start :" + (ftpPort + attempt) + " failed: " + e.message)
-                    }
-                }
-                if (!started) log("FTP could not bind any port")
-            } else {
-                log("FTP disabled by settings")
-            }
+            startFtpServer()
             AppState.startMillis = System.currentTimeMillis()
             AppState.port = readPort(File(dir, "config.json"))
             AppState.gamemode = readGamemode(dir)
@@ -290,13 +284,50 @@ class OmpServerService : Service() {
         return sb.toString()
     }
 
-    private fun stopServer() {
-        manualStop = true
+    /** 启动 FTP 服务器（独立于 omp-server；由设置页开关控制，开→自动启动）。 */
+    private fun startFtpServer() {
+        try {
+            val dir = File(filesDir, "server").apply { mkdirs() }
+            val prefs = getSharedPreferences("omp", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("ftp_enabled", true)) { log("FTP disabled by settings"); stopFtpServer(); return }
+            if (ftpServer?.running == true) { log("FTP already running"); return }
+            val ftpPort = prefs.getInt("ftp_port", 2122)
+            var started = false
+            for (attempt in 0..4) {
+                try {
+                    val trial = if (attempt == 0) ftpPort else ftpPort + attempt
+                    val ftpUser = prefs.getString("ftp_user", "").orEmpty()
+                    val ftpPass = prefs.getString("ftp_pass", "").orEmpty()
+                    val fs = FtpServer(dir, trial, ftpUser, ftpPass)
+                    // FTP 命令日志（诊断 MT 等客户端握手/登录问题）
+                    val ftpLogFile = File(getExternalFilesDir(null), "ftp_log.txt")
+                    fs.logSink = { s ->
+                        try { ftpLogFile.appendText("[" + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()) + "] $s\n") } catch (e: Exception) {}
+                    }
+                    try { ftpLogFile.writeText("") } catch (e: Exception) {}
+                    fs.start()
+                    ftpServer = fs
+                    log("FTP server listening on :" + trial + " (root " + dir.absolutePath + ", user='" + ftpUser + "')")
+                    started = true
+                    break
+                } catch (e: Exception) { log("FTP start :" + (ftpPort + attempt) + " failed: " + e.message) }
+            }
+            if (!started) log("FTP could not bind any port")
+        } catch (e: Exception) { log("FTP start error: " + e.message) }
+    }
+
+    /** 停止 FTP 服务器。 */
+    private fun stopFtpServer() {
         ftpServer?.let { try { it.stop() } catch (e: Exception) {} }
         ftpServer = null
+        log("FTP stopped")
+    }
+
+    private fun stopServer() {
+        manualStop = true
+        // FTP 独立于服务器：停止服务器时保留 FTP（只要设置页开关开着）
         AppState.running = false
-        serverProc?.let { proc ->
-            proc.destroy()
+        serverProc?.let { proc ->            proc.destroy()
             try { proc.waitFor(3000, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) {}
             if (proc.isAlive) proc.destroyForcibly()
         }
@@ -311,6 +342,102 @@ class OmpServerService : Service() {
                     lines.forEach { log(it) }
                 }
             } catch (e: IOException) {}
+        }
+    }
+
+    // ---------- FRP (frpc 内网穿透) ----------
+    private fun frpcDir(): File = File(filesDir, "server").apply { mkdirs() }.let { File(it, "frpc") }
+
+    private fun frpcConfig(): File = File(frpcDir(), "frpc.toml")
+
+    private fun startFrpc() {
+        manualStop = false
+        try {
+            if (frpcProc?.isAlive == true) { log("FRP already running."); return }
+            val cfg = frpcConfig()
+            val dir = frpcDir()
+            log("=== FRP start ===")
+            log("cfg : ${cfg.absolutePath} exists=${cfg.exists()}")
+            if (!cfg.exists()) {
+                try { copyAssets("server/frpc/frpc.toml", frpcDir()) } catch (e: Exception) { log("FRP cfg restore: ${e.message}") }
+            }
+            if (!cfg.exists()) { log("FRP: frpc.toml missing."); return }
+
+            // 从 nativeLibraryDir 找 libfrpc.so（系统认可的可执行位置，与 omp-server 一致）
+            val exe = File(applicationInfo.nativeLibraryDir, "libfrpc.so")
+            if (!exe.exists()) {
+                log("FRP: libfrpc.so missing in " + applicationInfo.nativeLibraryDir)
+                return
+            }
+            log("frpc: ${exe.absolutePath} size=${exe.length()}")
+            val pb = ProcessBuilder(exe.absolutePath, "-c", cfg.absolutePath)
+            pb.directory(dir)
+            pb.redirectErrorStream(true)
+            val out = File(getExternalFilesDir(null), "frpc_log.txt")
+            try { if (out.exists()) out.delete() } catch (e: Exception) {}
+            pb.redirectOutput(out)
+            frpcProc = pb.start()
+            // 等 2 秒判断是否真正起来（frpc 若配置错误会立即退出）
+            val exited = frpcProc!!.waitFor(2, TimeUnit.SECONDS)
+            if (exited && !frpcProc!!.isAlive) {
+                val code = frpcProc!!.exitValue()
+                val err = try { out.readText().take(2000) } catch (e: Exception) { "" }
+                log("FRP exited code=$code\n$err")
+                frpcProc = null
+                frpcOn = false
+                writeFrpcState()
+                notifyLog("FRP failed (code $code) - see frpc_log")
+                return
+            }
+            frpcOn = true
+            writeFrpcState()
+            log("FRP running (pid via pidof)")
+            notifyLog("FRP running")
+            // 读日志流（frpc 持续输出）
+            readStream(FileInputStream(out))
+            frpcProc!!.waitFor()
+            frpcOn = false
+            writeFrpcState()
+            log("FRP exited")
+            notifyLog("FRP exited")
+        } catch (e: Exception) {
+            frpcOn = false
+            writeFrpcState()
+            log("FRP FAILED: $e")
+            notifyLog("FRP failed: $e")
+        }
+    }
+
+    private fun stopFrpc() {
+        try { frpcProc?.let { proc -> proc.destroy(); try { proc.waitFor(2000, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) {}; if (proc.isAlive) proc.destroyForcibly() } } catch (e: Exception) {}
+        frpcProc = null
+        frpcOn = false
+        writeFrpcState()
+        log("FRP stopped")
+    }
+
+    private fun frpcRunning(): Boolean {
+        // 持久状态 + 实际 pidof 双查
+        try {
+            val pid = sh("pidof frpc").trim().toLongOrNull() ?: 0L
+            return pid > 0
+        } catch (e: Exception) { return false }
+    }
+
+    private fun writeFrpcState() {
+        val text = "running=${if (frpcOn) "1" else "0"}\n"
+        frpcStateFile?.let { f -> try { f.writeText(text) } catch (e: Exception) {} }
+        try { val ext = getExternalFilesDir(null)?.let { File(it, "frpc_state.txt") }; ext?.writeText(text) } catch (e: Exception) {}
+    }
+
+    private fun loadFrpcState() {
+        val ext = getExternalFilesDir(null)?.let { File(it, "frpc_state.txt") }
+        if (ext != null && ext.exists()) {
+            try {
+                val m = HashMap<String, String>()
+                ext.readLines().forEach { l -> val i = l.indexOf('='); if (i > 0) m[l.substring(0, i)] = l.substring(i + 1) }
+                frpcOn = m["running"] == "1"
+            } catch (e: Exception) {}
         }
     }
 
@@ -348,6 +475,42 @@ class OmpServerService : Service() {
                 copyAssets(child, out)
             }
         }
+    }
+
+    /**
+     * 只补缺失的资源：对比 assets 的子目录与目标，仅把目标里【不存在】的文件补上。
+     * 已存在的文件一律保留（不覆盖），从而避免覆盖用户修改过的 config.json 等文件。
+     */
+    private fun copyMissing(path: String, targetDir: File) {
+        val am = assets
+        val entries = am.list(path) ?: return
+        for (e in entries) {
+            val out = File(targetDir, e)
+            val child = "$path/$e"
+            if (out.exists()) {
+                if (out.isDirectory) copyMissing(child, out)
+                continue // 文件已存在 → 保留用户版本，不覆盖
+            }
+            try {
+                am.open(child).use { input -> FileOutputStream(out).use { os ->
+                    val buf = ByteArray(65536)
+                    while (true) { val n = input.read(buf); if (n <= 0) break; os.write(buf, 0, n) }
+                } }
+            } catch (e: IOException) {
+                if (!out.mkdirs()) log("mkdir failed: $out (maybe exists)")
+                copyMissing(child, out)
+            }
+        }
+    }
+
+    /**
+     * 每次启动时确保运行必需的资源齐全：components（组件库）与 pawncc（编译器）。
+     * 只对比 assets 里同名资源是否缺失，缺失则补上；其它目录（config、gamemodes 等）不检查、不覆盖。
+     */
+    private fun ensureRequiredAssets(dir: File) {
+        copyMissing("server/components", File(dir, "components"))
+        copyMissing("server/pawncc", File(dir, "pawncc"))
+        log("ensured required assets (components/pawncc)")
     }
 
     private fun hasStoragePerm(): Boolean =
