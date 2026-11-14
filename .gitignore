@@ -22,3 +22,5 @@ AndroidManifest.xml.bak
 # 编译器生成产物
 open.mp/lib/pawn/source/compiler/version.h
 android-app/frpc-bin/
+components-bundle/
+components-bundle.zip
