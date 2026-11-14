@@ -32,8 +32,9 @@ if [ ! -d "$BUNDLE_DIR" ] || [ ! -f "$BUNDLE_DIR/server/omp-server" ]; then
   echo "  下载: $RELEASE_URL"
   rm -f "$MAIN/$BUNDLE_ZIP"
   curl -fL --retry 3 -o "$MAIN/$BUNDLE_ZIP" "$RELEASE_URL"
-  rm -rf "$BUNDLE_DIR"; mkdir -p "$BUNDLE_DIR"
-  cd "$MAIN" && unzip -q -o "$BUNDLE_ZIP" -d "$BUNDLE_DIR" && cd - >/dev/null
+  rm -rf "$BUNDLE_DIR"
+  # zip 顶层已是 components-bundle/，解压到 $MAIN 让其正好落成 $BUNDLE_DIR
+  cd "$MAIN" && unzip -q -o "$BUNDLE_ZIP" -d "$MAIN" && cd - >/dev/null
 fi
 SRC="$BUNDLE_DIR/server"          # omp-server + components/
 PAWNTOOLS="$BUNDLE_DIR/pawn-tools"
