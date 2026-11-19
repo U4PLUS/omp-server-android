@@ -1,0 +1,523 @@
+//----------------------------------------------------------
+//
+//   FileManager v1.4 by JaTochNietDan
+//	 http://www.jatochnietdan.com
+//
+//----------------------------------------------------------
+#if defined(_WIN32)
+	#include <io.h>   // For access().
+	#include <direct.h>   // For access().
+	#include "dirent.h"
+#else
+	#include <dirent.h>
+#endif 
+
+#include <sys/types.h>  // For stat().
+#include <sys/stat.h>   // For stat().
+#include <stdio.h> // for the sprintf function
+#include "stdlib.h"
+#include "directory.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+#include <string>
+#include <fstream>
+#include <cstring>
+
+
+#include "SDK/amx/amx.h"
+#include "SDK/plugincommon.h"
+
+#ifndef FILEMANAGER_VERSION
+#define FILEMANAGER_VERSION "dev"
+#endif
+#define VERSION "Version " FILEMANAGER_VERSION
+
+using namespace std;
+
+// ============================================================
+// Android arm64 64-bit pointer truncation fix:
+// Pawn cell is 32-bit but arm64 pointers are 64-bit. We can't
+// return raw pointers as cells (would truncate). Use handle tables.
+// ============================================================
+#include <unordered_map>
+#include <cstdint>
+
+static std::unordered_map<cell, FILE*> g_fileHandles;
+static std::unordered_map<cell, DirectoryStream*> g_dirHandles;
+static cell g_nextHandle = 1;  // start at 1 (0 = invalid)
+
+static inline cell registerFileHandle(FILE* fp) {
+    if (!fp) return 0;
+    cell h = g_nextHandle++;
+    g_fileHandles[h] = fp;
+    return h;
+}
+
+static inline FILE* getFileHandle(cell h) {
+    auto it = g_fileHandles.find(h);
+    return (it != g_fileHandles.end()) ? it->second : nullptr;
+}
+
+static inline void unregisterFileHandle(cell h) {
+    g_fileHandles.erase(h);
+}
+
+static inline cell registerDirHandle(DirectoryStream* ds) {
+    if (!ds) return 0;
+    cell h = g_nextHandle++;
+    g_dirHandles[h] = ds;
+    return h;
+}
+
+static inline DirectoryStream* getDirHandle(cell h) {
+    auto it = g_dirHandles.find(h);
+    return (it != g_dirHandles.end()) ? it->second : nullptr;
+}
+
+static inline void unregisterDirHandle(cell h) {
+    g_dirHandles.erase(h);
+}
+//----------------------------------------------------------
+typedef void (*logprintf_t)(const char* format, ...);
+
+logprintf_t logprintf;
+void **ppPluginData;
+extern void *pAMXFunctions;
+
+bool Logging = false;
+//----------------------------------------------------------
+PLUGIN_EXPORT unsigned int PLUGIN_CALL Supports() 
+{
+	return SUPPORTS_VERSION | SUPPORTS_AMX_NATIVES;
+}
+
+PLUGIN_EXPORT bool PLUGIN_CALL Load( void **ppData ) 
+{
+	pAMXFunctions = ppData[PLUGIN_DATA_AMX_EXPORTS];
+	logprintf = (logprintf_t)ppData[PLUGIN_DATA_LOGPRINTF];
+
+	logprintf( "******************" );
+	logprintf( "** FILE MANAGER **" );
+	logprintf( "**    Loaded    **" );
+	logprintf( "** %s **",VERSION);
+	logprintf( "******************" );
+	return true;
+}
+
+PLUGIN_EXPORT void PLUGIN_CALL Unload( )
+{
+	if(Logging) logprintf( "[FileManager]: FileManager was unloaded." );
+}
+
+static cell AMX_NATIVE_CALL n_file_move( AMX* amx, cell* params )
+{
+	char *file;
+	char *destination;
+
+	amx_StrParam(amx, params[1], file);
+	amx_StrParam(amx, params[2], destination);
+
+	if(rename(file,destination) != -1)
+	{
+		if(Logging) logprintf("[FileManager]: The file \"%s\" was moved to \"%s\"",file,destination);
+		return true;
+	}
+	if(Logging) logprintf("[FileManager]: The file \"%s\" could not be moved to \"%s\"",file,destination);
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_file_delete( AMX* amx, cell* params )
+{
+	char *file;
+
+	amx_StrParam(amx, params[1], file);
+
+	if(remove(file) != -1)
+	{
+		if(Logging) logprintf("[FileManager]: The file \"%s\" was deleted",file);
+		return true;
+	}
+	if(Logging) logprintf("[FileManager]: The file \"%s\" could not be deleted",file);
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_file_create( AMX* amx, cell* params )
+{
+	char *file;
+
+	amx_StrParam(amx, params[1], file);
+
+	FILE *pFile = fopen(file,"w");
+	if(pFile)
+	{
+		if(Logging) logprintf("[FileManager]: \"%s\" was created succesfully",file);
+		fclose(pFile);
+		return true;
+	}
+	else
+	if(Logging) logprintf("[FileManager]: \"%s\" was not created succesfully",file);
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_file_write( AMX* amx, cell* params )
+{
+	char
+		*file,
+		*text,
+		*mode;
+
+	amx_StrParam(amx, params[1], file);
+	amx_StrParam(amx, params[2], text);
+	amx_StrParam(amx, params[3], mode);
+
+	FILE *pFile = fopen(file,mode);
+	if(pFile)
+	{
+		fwrite(text,1,strlen(text),pFile);
+		if(Logging) logprintf("[FileManager]: \"%s\" was written to succesfully in \"%s\" mode!",file,mode);
+		fclose(pFile);
+		return true;
+	}
+	if(Logging) logprintf("[FileManager]: \"%s\" was not written to succesfully in \"%s\" mode!",file,mode);
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_file_read( AMX* amx, cell* params )
+{
+	char 
+		*file,
+		*buffer;
+
+	long lSize;
+	cell *buf;
+
+	bool success = false;
+
+	amx_StrParam(amx, params[1], file);
+
+	FILE *pFile = fopen(file,"r");
+	if(pFile)
+	{
+		fseek (pFile , 0 , SEEK_END);
+		lSize = ftell (pFile);
+		rewind (pFile);
+
+		if((lSize + 2) > params[3]) lSize = params[3]; // Users array is smaller than read data, only store as much as they specified
+
+		if((buffer = (char*) malloc (sizeof(char)* (lSize + 2))) != NULL) // Check memory is allocated correctly
+		{
+			fread (buffer, lSize, 1, pFile);
+
+			amx_GetAddr(amx, params[2], &buf);
+
+			buffer[lSize + 1] = '\0';
+
+			amx_SetString(buf, buffer, 0, 0, lSize + 1);
+
+			free(buffer); // Free allocated memory, otherwise we get a memory leak
+
+			if(Logging) logprintf("[FileManager]: \"%s\" was read succesfully",file);
+			success = true;
+		}
+		fclose(pFile);	
+	}
+	if(Logging && !success) logprintf("[FileManager]: \"%s\" was not read succesfully",file);
+	return success;
+}
+
+static cell AMX_NATIVE_CALL n_file_copy( AMX *amx, cell *params)
+{
+	char
+		*file,
+		*filedest;
+
+	amx_StrParam(amx, params[1], file);
+	amx_StrParam(amx, params[2], filedest);
+
+	FILE *pFile = fopen(file,"r");
+	if(pFile)
+	{
+		fclose(pFile);
+		
+		ifstream f1(file, fstream::binary);
+		ofstream f2(filedest, fstream::trunc|fstream::binary);
+
+		if(f2 << f1.rdbuf()) return true;
+	}
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_dir_create( AMX* amx, cell* params )
+{
+	char *dir;
+
+	amx_StrParam(amx, params[1], dir);
+#if defined(_WIN32)
+	if(mkdir(dir) == -1)
+	{
+		if(Logging) logprintf("[FileManager]: Directory \"%s\" could not be created!",dir);
+		return false;
+	}
+#else 
+	if(mkdir(dir,0755) == -1)
+	{
+		if(Logging) logprintf("[FileManager]: Directory \"%s\" could not be created!",dir);
+		return false;
+	}
+#endif
+	if(Logging) logprintf("[FileManager]: Directory \"%s\" was created!",dir);
+	return true;
+}
+
+static cell AMX_NATIVE_CALL n_dir_delete( AMX* amx, cell* params )
+{
+	char *dir;
+
+	amx_StrParam(amx, params[1], dir);
+
+	if(rmdir(dir) != 0)
+	{
+		if(Logging) logprintf("[FileManager]: Directory \"%s\" could not be deleted!",dir);
+		return false;
+	}
+	if(Logging) logprintf("[FileManager]: Directory \"%s\" was deleted!",dir);
+	return true;
+}
+
+#if defined(_WIN32)
+
+static cell AMX_NATIVE_CALL n_dir_exists(AMX* amx, cell* params)
+{
+	char *dir;
+	string strPath;
+
+	amx_StrParam(amx, params[1],dir);
+
+	strPath.append(dir);
+
+    if ( access( strPath.c_str(), 0 ) == 0 )
+    {
+        struct stat status;
+        stat( strPath.c_str(), &status );
+
+        if ( status.st_mode & S_IFDIR )
+        {
+			if(Logging) logprintf("[FileManager]: Directory \"%s\" exists!",dir);
+            return 1;
+        }
+        else
+        {
+			if(Logging) logprintf("[FileManager]: Directory \"%s\" is not a directory, it's a file!",dir);
+            return 2;
+        }
+    }
+    else
+    {
+		if(Logging) logprintf("[FileManager]: Directory \"%s\" does not exist!",dir);
+        return 0;
+    }
+}
+
+#else
+
+static cell AMX_NATIVE_CALL n_dir_exists(AMX* amx, cell* params)
+{
+    struct stat st;
+	char *dir;
+
+	amx_StrParam(amx, params[1],dir);
+
+    if (stat(dir,&st) == 0)
+    {
+		if(Logging) logprintf("[FileManager]: Directory \"%s\" exists!",dir);
+        return true;
+	}
+	if(Logging) logprintf("[FileManager]: Directory \"%s\" does not exist!",dir);
+    return false;
+}
+
+#endif
+
+static cell AMX_NATIVE_CALL n_file_exists( AMX* amx, cell* params)
+{
+	char* file;
+	
+	amx_StrParam(amx,params[1],file);
+
+	FILE *pFile = fopen(file,"r");
+	if(pFile)
+	{
+		fclose(pFile);
+		return true;
+	}
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_f_open( AMX* amx, cell* params)
+{
+	char *file, *mode;
+	
+	amx_StrParam(amx, params[1], file);
+	amx_StrParam(amx, params[2], mode);
+	
+	FILE *fp = fopen(file, mode);
+    return registerFileHandle(fp); // Store in handle table, return handle id
+}
+
+static cell AMX_NATIVE_CALL n_f_close( AMX* amx, cell* params)
+{
+	cell h = params[1];
+	FILE *pFile = getFileHandle(h);
+
+	if(pFile) 
+	{
+		fclose(pFile);
+		unregisterFileHandle(h);
+		return true;
+	}
+	return false;
+}
+
+static cell open_directory(AMX* amx, cell* params, bool sorted)
+{
+    char* path;
+    amx_StrParam(amx, params[1], path);
+    try {
+        DirectoryStream* ds = DirectoryStream::open(path, sorted);
+        return registerDirHandle(ds);
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+static cell AMX_NATIVE_CALL n_dir_open(AMX* amx, cell* params)
+{
+    return open_directory(amx, params, false);
+}
+
+static cell AMX_NATIVE_CALL n_dir_open_sorted(AMX* amx, cell* params)
+{
+    return open_directory(amx, params, true);
+}
+
+static cell AMX_NATIVE_CALL n_dir_list(AMX* amx, cell* params)
+{
+    DirectoryStream* dir = getDirHandle(params[1]);
+    if (!dir || params[4] <= 0) return false;
+    DirectoryEntry entry;
+    try {
+        if (!dir->next(entry)) return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    cell *buf, *addr;
+    amx_GetAddr(amx, params[3], &addr);
+    *addr = entry.type == DT_REG ? 2 : entry.type == DT_DIR ? 1 : 0;
+    amx_GetAddr(amx, params[2], &buf);
+    amx_SetString(buf, entry.name.c_str(), 0, 0, params[4]);
+    return true;
+}
+
+static cell AMX_NATIVE_CALL n_dir_close(AMX* amx, cell* params)
+{
+    cell h = params[1];
+    DirectoryStream* dir = getDirHandle(h);
+    if (!dir) return false;
+    delete dir;
+    unregisterDirHandle(h);
+    return true;
+}
+
+static cell AMX_NATIVE_CALL n_f_read( AMX* amx, cell* params)
+{
+	FILE *pFile = getFileHandle(params[1]);
+	
+	char *buffer;
+
+	cell *buf;
+
+
+	if(pFile) // Is it a valid file handle?
+	{
+		if((buffer = (char*) malloc (sizeof(char) * params[3])) != NULL) // Check memory is allocated correctly
+		{
+			if(fgets(buffer, params[3], pFile) != NULL) // Get the current line, will return NULL if no more lines
+			{
+				int index = strlen(buffer) - 1; // Get the last cell index
+
+				if(buffer[index] == '\n') // Check if the last cell contains a newline
+					buffer[index] = 0; // Remove it
+
+				amx_GetAddr(amx, params[2], &buf);
+
+				amx_SetString(buf, buffer, 0, 0, params[3]);
+				
+				free(buffer); // Need to free the buffer, otherwise it's a memory leak!
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_f_write( AMX* amx, cell* params)
+{
+	FILE *pFile = getFileHandle(params[1]);
+
+	if(pFile) // Is it a valid file handle?
+	{
+		char *buf;
+
+		amx_StrParam(amx, params[2], buf);
+
+		fwrite(buf, 1, strlen(buf), pFile); // Write to the file
+		return true;
+	}
+	return false;
+}
+
+static cell AMX_NATIVE_CALL n_file_log( AMX* amx, cell* params )
+{
+	Logging = 1;
+	logprintf("[FileManager]: Logging started!");
+	return false;
+}
+
+AMX_NATIVE_INFO FileManagerNatives[ ] =
+{
+	{ "file_move",		n_file_move		},
+	{ "file_delete",	n_file_delete	},
+	{ "file_create",	n_file_create	},
+	{ "file_write",		n_file_write	},
+	{ "file_read",		n_file_read		},
+	{ "file_log",		n_file_log		},
+	{ "file_exists",	n_file_exists	},
+	{ "file_copy",		n_file_copy		},
+
+	{ "dir_create",		n_dir_create	},
+	{ "dir_delete",		n_dir_delete	},
+	{ "dir_exists",		n_dir_exists	},
+
+	{ "dir_open_sorted", n_dir_open_sorted },
+	{ "dir_open",		n_dir_open		},
+	{ "dir_close",		n_dir_close		},
+	{ "dir_list",		n_dir_list		},
+
+	{ "f_open",			n_f_open		},
+	{ "f_close",		n_f_close		},
+	{ "f_read",			n_f_read		},
+	{ "f_write",		n_f_write		},
+
+	{ 0,				0				}
+};
+
+PLUGIN_EXPORT int PLUGIN_CALL AmxLoad( AMX *amx ) 
+{
+	return amx_Register( amx, FileManagerNatives, -1 );
+}
+
+PLUGIN_EXPORT int PLUGIN_CALL AmxUnload( AMX *amx ) 
+{
+	return AMX_ERR_NONE;
+}
